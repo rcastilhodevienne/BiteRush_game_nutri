@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, minimal-ui">
+    <title>BiteRush: Sobrevivência Nutricional</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #121212;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none; /* Previne scroll no celular */
+        }
+        #game-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        canvas {
+            box-shadow: 0 0 20px rgba(0, 255, 100, 0.2);
+        }
+    </style>
+    <!-- Phaser 3 Framework (Leve e Rápido) -->
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+</head>
+<body>
+    <div id="game-container"></div>
+
+    <script>
+        const config = {
+            type: Phaser.AUTO,
+            width: 1080,
+            height: 1920,
+            parent: 'game-container',
+            scale: {
+                mode: Phaser.Scale.FIT,
+                autoCenter: Phaser.Scale.CENTER_BOTH
+            },
+            physics: {
+                default: 'arcade',
+                arcade: {
+                    gravity: { y: 600 },
+                    debug: false
+                }
+            },
+            scene: {
+                preload: preload,
+                create: create,
+                update: update
+            }
+        };
+
+        const game = new Phaser.Game(config);
+
+        // Variáveis de Estado
+        let player;
+        let itemsGroup;
+        let score = 0;
+        let toxicity = 0;
+        let scoreText;
+        let uiBarBG, uiBarFill;
+        let isGameOver = false;
+        let spawnerEvent;
+        let baseSpeed = 1; 
+        let currentScale = 1;
+        let spawnDelay = 800;
+        let difficultyEvent;
+
+        function preload() {
+            // Não carregamos imagens externas para que o jogo rode instantaneamente.
+            // Tudo será desenhado via código na função createGraphics()
+        }
+
+        function create() {
+            createGraphics(this);
+
+            const width = this.cameras.main.width;
+            const height = this.cameras.main.height;
+
+            // Fundo
+            let bg = this.add.graphics();
+            bg.fillGradientStyle(0x1a1a2e, 0x1a1a2e, 0x0f0f1a, 0x0f0f1a, 1);
+            bg.fillRect(0, 0, width, height);
+
+            // Interface (Pontuação)
+            scoreText = this.add.text(50, 80, '0', { 
+                fontSize: '120px', 
+                fontFamily: 'Arial Black', 
+                fill: '#ffffff',
+                stroke: '#000000',
+                strokeThickness: 8
+            });
+
+            // Interface (Barra de Toxina)
+            this.add.text(width - 400, 50, 'TOXIDADE', { fontSize: '32px', fill: '#ff4444', fontFamily: 'Arial Black' });
+            uiBarBG = this.add.rectangle(width - 225, 120, 350, 40, 0x333333).setStrokeStyle(4, 0x000000);
+            uiBarFill = this.add.rectangle(width - 400, 100, 0, 40, 0xff0000).setOrigin(0, 0);
+
+            // Criar o Avatar
+            player = this.physics.add.sprite(width / 2, height - 150, 'avatar');
+            player.setCollideWorldBounds(true);
+            player.body.allowGravity = false; // O player não cai
+            player.setDepth(10); // Fica na frente das comidas
+
+            // Grupo de comidas que caem
+            itemsGroup = this.physics.add.group();
+
+            // Interação fluida de toque (Arrastar lateralmente com latência 0)
+            this.input.on('pointermove', (pointer) => {
+                if (!isGameOver && pointer.isDown) {
+                    // O modificador de velocidade (baseSpeed) simula a "lentidão" do inchaço
+                    let targetX = pointer.x;
+                    let dif = targetX - player.x;
+                    player.x += dif * (0.3 * baseSpeed);
+                }
+            });
+
+            // Tratamento de colisão entre player e itens
+            this.physics.add.overlap(player, itemsGroup, collectItem, null, this);
+
+            // Sistema de Spawner
+            startSpawner(this);
+
+            // Aumento progressivo de dificuldade (a cada 10 seg os itens caem mais rápido)
+            difficultyEvent = this.time.addEvent({
+                delay: 10000,
+                callback: () => {
+                    if(spawnDelay > 200) {
+                        spawnDelay -= 100;
+                        this.physics.world.gravity.y += 100; // Aumenta a velocidade de queda
+                        resetSpawner(this);
+                    }
+                },
+                loop: true
+            });
+        }
+
+        function update() {
+            if (isGameOver) return;
+
+            // Limpeza de memória: destruir itens que saíram da tela
+            itemsGroup.children.iterate((item) => {
+                if (item && item.y > this.cameras.main.height + 100) {
+                    item.destroy();
+                }
+            });
+        }
+
+        function startSpawner(scene) {
+            spawnerEvent = scene.time.addEvent({
+                delay: spawnDelay,
+                callback: () => spawnFood(scene),
+                loop: true
+            });
+        }
+
+        function resetSpawner(scene) {
+            if(spawnerEvent) spawnerEvent.remove();
+            startSpawner(scene);
+        }
+
+        function spawnFood(scene) {
+            if (isGameOver) return;
+
+            const x = Phaser.Math.Between(100, scene.cameras.main.width - 100);
+            
+            // Lógica de Sorteio de Itens
+            // 60% Saudável, 30% Lixo, 10% Superalimento (Água)
+            let rand = Math.random();
+            let type = 'healthy';
+            if (rand > 0.9) type = 'super';
+            else if (rand > 0.6) type = 'junk';
+
+            let item;
+            if (type === 'healthy') {
+                item = itemsGroup.create(x, -100, 'apple');
+                item.itemType = 'healthy';
+            } else if (type === 'junk') {
+                item = itemsGroup.create(x, -100, 'burger');
+                item.itemType = 'junk';
+                item.setScale(1.2);
+            } else {
+                item = itemsGroup.create(x, -100, 'water');
+                item.itemType = 'super';
+            }
+
+            item.setVelocityY(Phaser.Math.Between(50, 200));
+            // Adiciona um leve movimento horizontal e rotação
+            item.setVelocityX(Phaser.Math.Between(-50, 50));
+            item.setAngularVelocity(Phaser.Math.Between(-100, 100));
+        }
+
+        function collectItem(player, item) {
+            if (isGameOver) return;
+
+            let type = item.itemType;
+            let x = item.x;
+            let y = item.y;
+            item.destroy();
+
+            if (type === 'healthy') {
+                score += 10;
+                scoreText.setText(score);
+                showFeedbackText(this, x, y, '+10', '#00ff00');
+                
+                // Animação de pulsar (dopamina visual)
+                this.tweens.add({
+                    targets: scoreText,
+                    scale: 1.2,
+                    duration: 100,
+                    yoyo: true
+                });
+
+            } else if (type === 'junk') {
+                // Penalidade visual e mecânica
+                this.cameras.main.shake(200, 0.015); // Treme a tela
+                toxicity += 34; // 3 junk foods = 100% = Game Over
+                currentScale += 0.25; // Avatar incha
+                baseSpeed *= 0.6; // Avatar fica mais lento e pesado
+
+                // Atualizar barra UI
+                updateToxicityBar(this);
+                showFeedbackText(this, x, y, 'TÓXICO!', '#ff0000');
+                
+                this.tweens.add({
+                    targets: player,
+                    scale: currentScale,
+                    duration: 200,
+                    ease: 'Bounce.easeOut'
+                });
+                
+                player.setTint(0xff8888); // Fica levemente vermelho
+
+                if (toxicity >= 100) {
+                    triggerGameOver(this);
+                }
+
+            } else if (type === 'super') {
+                // Purificação
+                toxicity = Math.max(0, toxicity - 34);
+                currentScale = 1; // Volta ao tamanho normal
+                baseSpeed = 1; // Recupera agilidade máxima
+                player.clearTint();
+                
+                updateToxicityBar(this);
+                showFeedbackText(this, x, y, 'LIMPO!', '#00ffff');
+                
+                this.tweens.add({
+                    targets: player,
+                    scale: 1,
+                    duration: 300,
+                    ease: 'Back.easeOut'
+                });
+            }
+        }
+
+        function updateToxicityBar(scene) {
+            let width = (toxicity / 100) * 350;
+            scene.tweens.add({
+                targets: uiBarFill,
+                width: width,
+                duration: 200
+            });
+        }
+
+        function triggerGameOver(scene) {
+            isGameOver = true;
+            scene.physics.pause();
+            if(spawnerEvent) spawnerEvent.remove();
+            if(difficultyEvent) difficultyEvent.remove();
+
+            player.setTint(0xff0000);
+
+            let cx = scene.cameras.main.centerX;
+            let cy = scene.cameras.main.centerY;
+
+            // Fundo escuro do Game Over
+            let overlay = scene.add.rectangle(cx, cy, scene.cameras.main.width, scene.cameras.main.height, 0x000000, 0.8);
+            overlay.setDepth(100);
+
+            // Textos
+            scene.add.text(cx, cy - 200, 'GAME OVER', { fontSize: '100px', fill: '#ff0000', fontFamily: 'Arial Black' }).setOrigin(0.5).setDepth(101);
+            scene.add.text(cx, cy - 50, 'Sua Pontuação: ' + score, { fontSize: '60px', fill: '#ffffff', fontFamily: 'Arial Black' }).setOrigin(0.5).setDepth(101);
+            
+            // Botão de Replay (Hypercasual clássico)
+            let restartText = scene.add.text(cx, cy + 150, 'TOQUE PARA REINICIAR', { fontSize: '50px', fill: '#00ff00', fontFamily: 'Arial Black', backgroundColor: '#222', padding: { x: 30, y: 15 } }).setOrigin(0.5).setDepth(101);
+            restartText.setInteractive({ useHandCursor: true });
+            
+            // Efeito de pulsar no botão
+            scene.tweens.add({ targets: restartText, alpha: 0.5, yoyo: true, repeat: -1, duration: 600 });
+
+            restartText.on('pointerdown', () => {
+                // Resetar variáveis globais antes de reiniciar
+                score = 0;
+                toxicity = 0;
+                currentScale = 1;
+                baseSpeed = 1;
+                spawnDelay = 800;
+                isGameOver = false;
+                scene.scene.restart();
+            });
+        }
+
+        function showFeedbackText(scene, x, y, text, color) {
+            let floatText = scene.add.text(x, y - 50, text, { fontSize: '40px', fill: color, fontFamily: 'Arial Black', stroke: '#000', strokeThickness: 6 }).setOrigin(0.5);
+            scene.tweens.add({
+                targets: floatText,
+                y: y - 150,
+                alpha: 0,
+                duration: 800,
+                onComplete: () => floatText.destroy()
+            });
+        }
+
+        // Função de Desenho de Assets Nativos (Dispensa carregamento de .png)
+        function createGraphics(scene) {
+            let g = scene.add.graphics();
+            
+            // Avatar (Rosto simples e simpático)
+            g.fillStyle(0xffffff, 1);
+            g.fillCircle(64, 64, 64);
+            g.fillStyle(0x000000, 1);
+            g.fillCircle(40, 50, 10); // Olho esq
+            g.fillCircle(88, 50, 10); // Olho dir
+            g.beginPath(); g.arc(64, 80, 20, 0, Math.PI, false); // Sorriso
+            g.strokePath();
+            g.generateTexture('avatar', 128, 128);
+            g.clear();
+
+            // Maçã (Comida Saudável)
+            g.fillStyle(0xff3333, 1);
+            g.fillCircle(40, 40, 40);
+            g.fillStyle(0x33cc33, 1);
+            g.fillEllipse(55, 15, 20, 10); // Folha
+            g.generateTexture('apple', 80, 80);
+            g.clear();
+
+            // Hambúrguer/Lixo (Junk Food) - Quadrado tóxico
+            g.fillStyle(0xcc7722, 1); // Pão
+            g.fillRoundedRect(10, 10, 60, 20, 10);
+            g.fillStyle(0x552200, 1); // Carne
+            g.fillRect(10, 35, 60, 15);
+            g.fillStyle(0xcc7722, 1); // Pão base
+            g.fillRoundedRect(10, 55, 60, 20, 10);
+            g.generateTexture('burger', 80, 80);
+            g.clear();
+
+            // Água (Superalimento) - Gota azul
+            g.fillStyle(0x3399ff, 1);
+            g.beginPath();
+            g.moveTo(40, 10);
+            g.lineTo(70, 70);
+            g.lineTo(10, 70);
+            g.closePath();
+            g.fill();
+            g.generateTexture('water', 80, 80);
+            g.clear();
+        }
+    </script>
+</body>
+</html>
